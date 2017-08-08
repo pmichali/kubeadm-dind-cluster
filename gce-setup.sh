@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+set -x
 if [ $(uname) = Darwin ]; then
   readlinkf(){ perl -MCwd -e 'print Cwd::abs_path shift' "$1";}
 else
@@ -27,7 +28,6 @@ if [ -z "${KUBE_DIND_GCE_PROJECT:-}" ]; then
     return 1
 fi
 
-set -x
 KUBE_DIND_VM="${KUBE_DIND_VM:-k8s-dind}"
 export KUBE_RSYNC_PORT=8730
 export APISERVER_PORT=8899

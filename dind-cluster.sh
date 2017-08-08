@@ -17,6 +17,7 @@ set -o errexit
 set -o nounset
 set -o pipefail
 set -o errtrace
+set -x
 
 if [ $(uname) = Darwin ]; then
   readlinkf(){ perl -MCwd -e 'print Cwd::abs_path shift' "$1";}
@@ -45,6 +46,10 @@ fi
 if [[ ! ${EMBEDDED_CONFIG:-} ]]; then
   source "${DIND_ROOT}/config.sh"
 fi
+
+IP_MODE="${IP_MODE:-legacy}"  # legacy, ipv4, ipv6, dualstack
+POD_NET_V4_CIDR_PREFIX="${POD_NET_V4_CIDR_PREFIX:-10.244}"
+POD_NET_V6_CIDR_PREFIX="${POD_NET_V6_CIDR_PREFIX:-2001}"
 
 CNI_PLUGIN="${CNI_PLUGIN:-bridge}"
 DIND_SUBNET="${DIND_SUBNET:-10.192.0.0}"
@@ -398,6 +403,9 @@ function dind::run {
   fi
   local -a opts=(--ip "${ip}" "$@")
   local -a args=("systemd.setenv=CNI_PLUGIN=${CNI_PLUGIN}")
+  args+=("systemd.setenv=IP_MODE=${IP_MODE}")
+  args+=("systemd.setenv=POD_NET_V4_CIDR_PREFIX=${POD_NET_V4_CIDR_PREFIX}")
+  args+=("systemd.setenv=POD_NET_V6_CIDR_PREFIX=${POD_NET_V6_CIDR_PREFIX}")
 
   if [[ ! "${container_name}" ]]; then
     echo >&2 "Must specify container name"
@@ -647,6 +655,37 @@ function dind::wait-for-ready {
   dind::step "Access dashboard at:" "http://localhost:${APISERVER_PORT}/ui"
 }
 
+function dind::create-static-routes-for-bridge {
+  if [[ ${CNI_PLUGIN} != bridge || $IP_MODE == "legacy" ]]; then
+      return 0
+  fi
+  echo "Creating static routes for bridge plugin"
+  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv4" ]]; then
+    local node_1_v4_gw=`docker exec kube-node-1 ifconfig dind0 | grep "inet addr" | cut -f 2 -d: | cut -f 1 -d' '`
+    local node_2_v4_gw=`docker exec kube-node-2 ifconfig dind0 | grep "inet addr" | cut -f 2 -d: | cut -f 1 -d' '`
+    if [[ -z "$node_1_v4_gw" || -z "$node_2_v4_gw" ]]; then
+	echo "WARNING! Unable to set IPv4 static routes on minion nodes - please setup manually"
+    else
+        local node_1_v4_subnet="${POD_NET_V4_CIDR_PREFIX}.1.0/24"
+        local node_2_v4_subnet="${POD_NET_V4_CIDR_PREFIX}.2.0/24"
+        docker exec -it kube-node-1 ip route add $node_2_v4_subnet via $node_2_v4_gw dev dind0
+        docker exec -it kube-node-2 ip route add $node_1_v4_subnet via $node_1_v4_gw dev dind0
+    fi
+  fi
+  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv6" ]]; then
+    local node_1_v6_gw=`docker exec -it kube-node-1 ifconfig dind0 | grep inet6 | cut -b 23- | cut -f 1 -d/`
+    local node_2_v6_gw=`docker exec -it kube-node-2 ifconfig dind0 | grep inet6 | cut -b 23- | cut -f 1 -d/`
+    if [[ -z "$node_1_v6_gw" || -z "$node_2_v6_gw" ]]; then
+	echo "WARNING! Unable to set IPv6 static routes on minion nodes - please setup manually"
+    else
+        local node_1_v6_subnet="${POD_NET_V6_CIDR_PREFIX}:1::/64"
+        local node_2_v6_subnet="${POD_NET_V6_CIDR_PREFIX}:2::/64"
+        docker exec -it kube-node-1 ip -6 route add $node_2_v6_subnet via $node_2_v6_gw dev dind0
+        docker exec -it kube-node-2 ip -6 route add $node_1_v6_subnet via $node_1_v6_gw dev dind0
+    fi
+  fi
+}
+
 function dind::up {
   dind::down
   dind::init
@@ -723,6 +762,7 @@ function dind::up {
       ;;
   esac
   dind::accelerate-kube-dns
+  dind::create-static-routes-for-bridge
   if [[ ${CNI_PLUGIN} != bridge || ${SKIP_SNAPSHOT} ]]; then
     # This is especially important in case of Calico -
     # the cluster will not recover after snapshotting
@@ -973,9 +1013,13 @@ case "${1:-}" in
     shift
     dind::run-e2e-serial "$@"
     ;;
+  routes)
+    dind::create-static-routes-for-bridge
+    ;;
   *)
     echo "usage:" >&2
     echo "  $0 up" >&2
+    echo "  $0 routes" >&2
     echo "  $0 reup" >&2
     echo "  $0 down" >&2
     echo "  $0 init kubeadm-args..." >&2

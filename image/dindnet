@@ -17,6 +17,7 @@ set -o errexit
 set -o nounset
 set -o pipefail
 set -o errtrace
+set -x
 
 IP_CIDR=$(ip addr show eth0 | grep -w inet | awk '{ print $2; }')
 IP=$(echo $IP_CIDR | sed 's,/.*,,')
@@ -28,20 +29,24 @@ function dind::setup-bridge {
   ip link set dind0 up
   
   # move ip to the bridge and restore routing via the old gateway
-  NETWORK_SIZE=$(echo $IP_CIDR | sed 's,.*/,,')
   DEFAULT_ROUTE=$(ip route | grep default | sed 's/eth0/dind0/')
-  DEFAULT_GW=$(echo $DEFAULT_ROUTE|awk '{print $3;}')
   
   ip addr del $IP_CIDR dev eth0
   ip addr add $IP_CIDR dev dind0
   ip route add $DEFAULT_ROUTE
-  
+
+}
+
+function dind::setup-config-file {
   # compute a network for the containers to live in
   # by adding CNI_BRIDGE_NETWORK_OFFSET to the current IP and cutting off
   # non-network bits according to CNI_BRIDGE_NETWORK_SIZE
   CNI_BRIDGE_NETWORK_SIZE=${CNI_BRIDGE_NETWORK_SIZE:-24}
   NETWORK=$(ip route | grep dind0 | grep -v default | sed 's,/.*,,')
+  NETWORK_SIZE=$(echo $IP_CIDR | sed 's,.*/,,')
   
+  DEFAULT_GW=$(ip route | grep default | sed 's/eth0/dind0/' | awk '{print $3;}')
+
   WILDCARD=$(ipcalc $IP_CIDR | grep Wildcard | awk '{print $2;}')
   IFS=. read -r i1 i2 i3 i4 <<< ${IP}
   IFS=. read -r n1 n2 n3 n4 <<< ${NETWORK}
@@ -77,8 +82,91 @@ function dind::setup-bridge {
 EOF
 }
 
+function dind::do-v6 {
+  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv6" ]]; then
+    true
+  else
+    false
+  fi
+}
+
+function dind::do-v4 {
+  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv4" ]]; then
+    true
+  else
+    false
+  fi
+}
+
+function dind::setup-new-config-file {
+  INSTANCE=`hostname | cut -d"-" -f 3`
+  if [[ $INSTANCE = "" ]]; then
+      INSTANCE="0"
+  fi
+  echo "Instance: ${INSTANCE}"
+
+  # Build config file for container network(s)
+  CONF_FILE=/etc/cni/net.d/10-bridge.conf
+  cat >$CONF_FILE <<PREFIX_EOF
+{
+  "cniVersion": "0.3.0",
+  "name": "dindnet",
+  "type": "bridge",
+  "bridge": "cbr0",
+  "isDefaultGateway": true,
+  "ipMasq": false,
+  "ipam": {
+    "type": "host-local",
+    "ranges": [
+PREFIX_EOF
+
+  if dind::do-v4 ; then
+    POD_NET_V4_SUBNET="${POD_NET_V4_CIDR_PREFIX}.${INSTANCE}.0/24"
+    POD_NET_V4_GW="${POD_NET_V4_CIDR_PREFIX}.${INSTANCE}.1"
+    cat >>$CONF_FILE <<V4_SUBNET_EOF
+      {
+        "subnet": "${POD_NET_V4_SUBNET}",
+        "gateway": "${POD_NET_V4_GW}"
+V4_SUBNET_EOF
+    if dind::do-v6 ; then
+      echo "      }," >>$CONF_FILE
+    else
+      echo "      }" >>$CONF_FILE
+    fi
+  fi
+
+  if dind::do-v6 ; then
+    POD_NET_V6_SUBNET="${POD_NET_V6_CIDR_PREFIX}:${INSTANCE}::/64"
+    POD_NET_V6_GW="${POD_NET_V6_CIDR_PREFIX}:${INSTANCE}::1"
+    cat >>$CONF_FILE <<V6_SUBNET_EOF
+      {
+        "subnet": "${POD_NET_V6_SUBNET}",
+        "gateway": "${POD_NET_V6_GW}"
+      }
+V6_SUBNET_EOF
+  fi
+  cat >>$CONF_FILE <<SUFFIX_EOF
+    ]
+  }
+}
+SUFFIX_EOF
+
+}
+
+
 if [[ "${CNI_BRIDGE_NETWORK_OFFSET:-}" ]]; then
-   dind::setup-bridge
+  dind::setup-bridge
+  if [[ $IP_MODE = "legacy" ]]; then
+    dind::setup-config-file
+  else
+    # TODO: Remove, once DinD is able to use v0.6.0 CNI release
+    if dind::do-v6 ; then
+      sysctl -w net.ipv6.conf.all.disable_ipv6=0
+    fi
+    curl -sSL --retry 5 https://github.com/containernetworking/plugins/releases/download/v0.6.0-rc1/cni-plugins-amd64-v0.6.0-rc1.tgz | \
+	tar -C /opt/cni/bin -xz
+    dind::setup-new-config-file
+  fi
 fi
 
 # make docker's kube-dns friendly
