@@ -19,7 +19,12 @@ set -o pipefail
 set -o errtrace
 set -x
 
-IP_CIDR=$(ip addr show eth0 | grep -w inet | awk '{ print $2; }')
+inet_version=""
+if [[ $IP_MODE = "ipv6" ]]; then
+  IP_CIDR=$(ip addr show eth0 | grep -w inet6 | grep -i global | head -1 | awk '{ print $2; }')
+else
+  IP_CIDR=$(ip addr show eth0 | grep -w inet | awk '{ print $2; }')
+fi
 IP=$(echo $IP_CIDR | sed 's,/.*,,')
 
 function dind::setup-bridge {

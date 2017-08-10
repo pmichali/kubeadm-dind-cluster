@@ -54,10 +54,14 @@ POD_NET_V6_CIDR_PREFIX="${POD_NET_V6_CIDR_PREFIX:-2001}"
 CNI_PLUGIN="${CNI_PLUGIN:-bridge}"
 DIND_SUBNET="${DIND_SUBNET:-10.192.0.0}"
 POD_NETWORK_CIDR="${POD_NETWORK_CIDR:-10.244.0.0/16}"
+ETCD_HOST="${ETCD_HOST:-127.0.0.1}"
 if [[ ${IP_MODE} = "ipv6" ]]; then
     dind_ip_base=${DIND_SUBNET}
+    ETCD_HOST="::1"
+    KUBE_RSYNC_ADDR="${KUBE_RSYNC_ADDR:-::1}"
 else
     dind_ip_base="$(echo "${DIND_SUBNET}" | sed 's/0$//')"
+    KUBE_RSYNC_ADDR="${KUBE_RSYNC_ADDR:-127.0.0.1}"
 fi
 DIND_IMAGE="${DIND_IMAGE:-}"
 BUILD_KUBEADM="${BUILD_KUBEADM:-}"
@@ -113,7 +117,7 @@ function dind::set-build-volume-args {
   if [ -n "${KUBEADM_DIND_LOCAL:-}" ]; then
     build_volume_args=(-v "$PWD:/go/src/k8s.io/kubernetes")
   else
-    build_container_name="$(KUBE_ROOT=$PWD &&
+    build_container_name="$(KUBE_ROOT=$PWD ETCD_HOST=${ETCD_HOST} &&
                             . ${build_tools_dir}/common.sh &&
                             kube::build::verify_prereqs >&2 &&
                             echo "${KUBE_DATA_CONTAINER_NAME:-${KUBE_BUILD_DATA_CONTAINER_NAME}}")"
@@ -368,11 +372,13 @@ function dind::ensure-binaries {
 
 function dind::ensure-network {
   local prefix="16"
+  local v6flag=""  
   if ! docker network inspect kubeadm-dind-net >&/dev/null; then
     if [[ ${IP_MODE} = "ipv6" ]]; then
       prefix="64"
+      v6flag="--ipv6"
     fi
-    docker network create --subnet="${DIND_SUBNET}/${prefix}" kubeadm-dind-net >/dev/null
+    docker network create ${v6flag} --subnet="${DIND_SUBNET}/${prefix}" kubeadm-dind-net >/dev/null
   fi
 }
 
@@ -556,7 +562,12 @@ function dind::init {
   # FIXME: I tried using custom tokens with 'kubeadm ex token create' but join failed with:
   # 'failed to parse response as JWS object [square/go-jose: compact JWS format must have three parts]'
   # So we just pick the line from 'kubeadm init' output
-  kubeadm_join_flags="$(dind::kubeadm "${container_id}" init --pod-network-cidr="${POD_NETWORK_CIDR}" --skip-preflight-checks "$@" | grep '^ *kubeadm join' | sed 's/^ *kubeadm join //')"
+  local pod_net_cidr=""
+  # TODO: May want to specify each of the plugins that require --pod-network-cidr
+  if [[ ${CNI_PLUGIN} != "bridge" ]]; then
+      pod_net_cidr="--pod-network-cidr=${POD_NETWORK_CIDR}"
+  fi
+  kubeadm_join_flags="$(dind::kubeadm "${container_id}" init --apiserver-advertise-address=${master_ip} ${pod_net_cidr} --skip-preflight-checks "$@" | grep '^ *kubeadm join' | sed 's/^ *kubeadm join //')"
   dind::configure-kubectl
   dind::deploy-dashboard
 }
@@ -821,7 +832,7 @@ function dind::restore {
 	local local_host="127.0.0.1"
 	if [[ ${IP_MODE} = "ipv6" ]]; then
 	  local_host="[::1]"
-	fi  
+	fi
         dind::restore_container "$(dind::run -r kube-master "${master_ip}" 1 ${local_host}:${APISERVER_PORT}:8080 ${master_opts[@]+"${master_opts[@]}"})"
         dind::step "Master container restored"
       else
