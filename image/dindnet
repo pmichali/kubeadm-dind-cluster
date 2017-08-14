@@ -19,27 +19,33 @@ set -o pipefail
 set -o errtrace
 set -x
 
-inet_version=""
-if [[ $IP_MODE = "ipv6" ]]; then
-  IP_CIDR=$(ip addr show eth0 | grep -w inet6 | grep -i global | head -1 | awk '{ print $2; }')
-else
-  IP_CIDR=$(ip addr show eth0 | grep -w inet | awk '{ print $2; }')
-fi
-IP=$(echo $IP_CIDR | sed 's,/.*,,')
+IPV4_CIDR=$(ip addr show eth0 | grep -w inet | awk '{ print $2; }')
+IP=$(echo $IPV4_CIDR | sed 's,/.*,,')
 
 function dind::setup-bridge {
   # create dind0 bridge and attach it to the veth interface eth0
   brctl addbr dind0
   brctl addif dind0 eth0
   ip link set dind0 up
-  
-  # move ip to the bridge and restore routing via the old gateway
-  DEFAULT_ROUTE=$(ip route | grep default | sed 's/eth0/dind0/')
-  
-  ip addr del $IP_CIDR dev eth0
-  ip addr add $IP_CIDR dev dind0
-  ip route add $DEFAULT_ROUTE
 
+  local v4_gw=$(ip route | grep default | cut -f 3 -d" ")
+  local v6_gw=$(ip -6 route | grep default | cut -f 3 -d" ")
+
+  ip addr del $IPV4_CIDR dev eth0
+  ip addr add $IPV4_CIDR dev dind0
+
+  ip route add default via $v4_gw dev dind0
+
+  if [[ $IP_MODE = "ipv6" ]]; then
+    IPV6_CIDR=$(ip addr show eth0 | grep -w inet6 | grep -i global | head -1 | awk '{ print $2; }')
+    ip addr del $IPV6_CIDR dev eth0
+    ip addr add $IPV6_CIDR dev dind0
+    if [[ ! -z "$v6_gw" ]]; then
+      # Must remove old route first (not deleted, when delete off of eth0)
+      ip -6 route del default via $v6_gw dev eth0
+      ip -6 route add default via $v6_gw dev dind0
+    fi
+  fi
 }
 
 function dind::setup-config-file {
@@ -160,14 +166,15 @@ SUFFIX_EOF
 
 
 if [[ "${CNI_BRIDGE_NETWORK_OFFSET:-}" ]]; then
+  if dind::do-v6 ; then
+    sysctl -w net.ipv6.conf.all.disable_ipv6=0
+    sysctl -w net.ipv6.conf.all.forwarding=1
+  fi
   dind::setup-bridge
   if [[ $IP_MODE = "legacy" ]]; then
     dind::setup-config-file
   else
     # TODO: Remove, once DinD is able to use v0.6.0 CNI release
-    if dind::do-v6 ; then
-      sysctl -w net.ipv6.conf.all.disable_ipv6=0
-    fi
     curl -sSL --retry 5 https://github.com/containernetworking/plugins/releases/download/v0.6.0-rc1/cni-plugins-amd64-v0.6.0-rc1.tgz | \
 	tar -C /opt/cni/bin -xz
     dind::setup-new-config-file
