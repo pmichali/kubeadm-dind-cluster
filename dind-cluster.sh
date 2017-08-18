@@ -704,30 +704,50 @@ function dind::create-static-routes-for-bridge {
       return 0
   fi
   echo "Creating static routes for bridge plugin"
-  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv4" ]]; then
-    local node_1_v4_gw=`docker exec kube-node-1 ifconfig dind0 | grep "inet addr" | cut -f 2 -d: | cut -f 1 -d' '`
-    local node_2_v4_gw=`docker exec kube-node-2 ifconfig dind0 | grep "inet addr" | cut -f 2 -d: | cut -f 1 -d' '`
-    if [[ -z "$node_1_v4_gw" || -z "$node_2_v4_gw" ]]; then
-	echo "WARNING! Unable to set IPv4 static routes on minion nodes - please setup manually"
-    else
-        local node_1_v4_subnet="${POD_NET_V4_CIDR_PREFIX}.1.0/24"
-        local node_2_v4_subnet="${POD_NET_V4_CIDR_PREFIX}.2.0/24"
-        docker exec -it kube-node-1 ip route add $node_2_v4_subnet via $node_2_v4_gw dev dind0
-        docker exec -it kube-node-2 ip route add $node_1_v4_subnet via $node_1_v4_gw dev dind0
-    fi
-  fi
-  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv6" ]]; then
-    local node_1_v6_gw=`docker exec -it kube-node-1 ifconfig dind0 | grep inet6 | cut -b 23- | cut -f 1 -d/`
-    local node_2_v6_gw=`docker exec -it kube-node-2 ifconfig dind0 | grep inet6 | cut -b 23- | cut -f 1 -d/`
-    if [[ -z "$node_1_v6_gw" || -z "$node_2_v6_gw" ]]; then
-	echo "WARNING! Unable to set IPv6 static routes on minion nodes - please setup manually"
-    else
-        local node_1_v6_subnet="${POD_NET_V6_CIDR_PREFIX}:1::/64"
-        local node_2_v6_subnet="${POD_NET_V6_CIDR_PREFIX}:2::/64"
-        docker exec -it kube-node-1 ip -6 route add $node_2_v6_subnet via $node_2_v6_gw dev dind0
-        docker exec -it kube-node-2 ip -6 route add $node_1_v6_subnet via $node_1_v6_gw dev dind0
-    fi
-  fi
+  declare -a v4GWs
+  declare -a v6GWs
+  local host
+  local gw
+  for ((n=1; n <= ${NUM_NODES}; n++)); do
+      host="kube-node-${n}"
+      if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv4" ]]; then
+	  gw=`docker exec $host ifconfig dind0 | grep "inet addr" | cut -f 2 -d: | cut -f 1 -d' '`
+	  if [[ -z $gw ]]; then
+	      echo "WARNING! ${host} doesn't have an IPv4 address on dind0 yet. Please setup static routes later."
+	      return 0
+	  fi
+	  v4GWs[$n]=$gw
+      fi
+      if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv6" ]]; then
+	  if [[ $IP_MODE = "dualstack" ]]; then
+	      gw=`docker exec $host ifconfig dind0 | grep inet6 | head -1 | cut -b 23- | cut -f 1 -d/`
+	  else
+	      gw=`docker exec $host ifconfig dind0 | grep inet6 | grep -i global | head -1 | cut -b 23- | cut -f 1 -d/`
+	  fi
+	  if [[ -z $gw ]]; then
+	      echo "WARNING! ${host} doesn't have an IPv6 address on dind0 yet. Please setup static routes later."
+	      return 0
+	  fi
+	  v6GWs[$n]=$gw
+      fi
+  done
+  # If here, we have IPv4 and/or IPv6 gateways for each node. Add static routes
+  for ((i=1; i <= NUM_NODES; i++)); do
+      for ((j=1; j <= NUM_NODES; j++)); do
+	  if [[ $i = $j ]]; then
+	      continue
+	  fi
+	  host="kube-node-${i}"
+	  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv4" ]]; then
+	      subnet="${POD_NET_V4_CIDR_PREFIX}.${j}.0/24"
+	      docker exec -it ${host} ip route add ${subnet} via ${v4GWs[$j]} dev dind0
+	  fi
+	  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv6" ]]; then
+	      subnet="${POD_NET_V6_CIDR_PREFIX}:${j}::/64"
+	      docker exec -it ${host} ip -6 route add ${subnet} via ${v6GWs[$j]} dev dind0
+	  fi
+      done
+  done
 }
 
 function dind::up {
