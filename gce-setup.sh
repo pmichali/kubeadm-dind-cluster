@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+set -x
 if [ $(uname) = Darwin ]; then
   readlinkf(){ perl -MCwd -e 'print Cwd::abs_path shift' "$1";}
 else

@@ -17,6 +17,7 @@ set -o errexit
 set -o nounset
 set -o pipefail
 set -o errtrace
+set -x
 
 if [ $(uname) = Darwin ]; then
   readlinkf(){ perl -MCwd -e 'print Cwd::abs_path shift' "$1";}
@@ -46,10 +47,26 @@ if [[ ! ${EMBEDDED_CONFIG:-} ]]; then
   source "${DIND_ROOT}/config.sh"
 fi
 
+IP_MODE="${IP_MODE:-legacy}"  # legacy, ipv4, ipv6, dualstack
+# TODO: Consider adding /prefix to allow customizing
+POD_NET_V4_CIDR_PREFIX="${POD_NET_V4_CIDR_PREFIX:-10.244}"
+POD_NET_V6_CIDR_PREFIX="${POD_NET_V6_CIDR_PREFIX:-2001:200}"
+
 CNI_PLUGIN="${CNI_PLUGIN:-bridge}"
-DIND_SUBNET="${DIND_SUBNET:-10.192.0.0}"
+ETCD_HOST="${ETCD_HOST:-127.0.0.1}"
 POD_NETWORK_CIDR="${POD_NETWORK_CIDR:-10.244.0.0/16}"
-dind_ip_base="$(echo "${DIND_SUBNET}" | sed 's/\.0$//')"
+if [[ ${IP_MODE} = "ipv6" ]]; then
+    DIND_SUBNET="${DIND_SUBNET:-2001:100::}"
+    dind_ip_base=${DIND_SUBNET}
+    ETCD_HOST="::1"
+    KUBE_RSYNC_ADDR="${KUBE_RSYNC_ADDR:-::1}"
+    SERVICE_CIDR="${SERVICE_CIDR:-2001:300::/110}"
+else
+    DIND_SUBNET="${DIND_SUBNET:-10.192.0.0}"
+    dind_ip_base="$(echo "${DIND_SUBNET}" | sed 's/0$//')"
+    KUBE_RSYNC_ADDR="${KUBE_RSYNC_ADDR:-127.0.0.1}"
+    SERVICE_CIDR="${SERVICE_CIDR:-10.96.0.0/12}"
+fi
 DIND_IMAGE="${DIND_IMAGE:-}"
 BUILD_KUBEADM="${BUILD_KUBEADM:-}"
 BUILD_HYPERKUBE="${BUILD_HYPERKUBE:-}"
@@ -112,7 +129,7 @@ function dind::set-build-volume-args {
   if [ -n "${KUBEADM_DIND_LOCAL:-}" ]; then
     build_volume_args=(-v "$PWD:/go/src/k8s.io/kubernetes")
   else
-    build_container_name="$(KUBE_ROOT=$PWD &&
+    build_container_name="$(KUBE_ROOT=$PWD ETCD_HOST=${ETCD_HOST} &&
                             . ${build_tools_dir}/common.sh &&
                             kube::build::verify_prereqs >&2 &&
                             echo "${KUBE_DATA_CONTAINER_NAME:-${KUBE_BUILD_DATA_CONTAINER_NAME}}")"
@@ -366,8 +383,14 @@ function dind::ensure-binaries {
 }
 
 function dind::ensure-network {
+  local prefix="16"
+  local v6flag=""
   if ! docker network inspect kubeadm-dind-net >&/dev/null; then
-    docker network create --subnet="${DIND_SUBNET}/16" kubeadm-dind-net >/dev/null
+    if [[ ${IP_MODE} = "ipv6" ]]; then
+      prefix="64"
+      v6flag="--ipv6"
+    fi
+    docker network create ${v6flag} --subnet="${DIND_SUBNET}/${prefix}" kubeadm-dind-net >/dev/null
   fi
 }
 
@@ -404,8 +427,15 @@ function dind::run {
   else
     shift $#
   fi
-  local -a opts=(--ip "${ip}" "$@")
+  local ip_arg="--ip"
+  if [[ ${IP_MODE} = "ipv6" ]]; then
+      ip_arg="--ip6"
+  fi
+  local -a opts=("${ip_arg}" "${ip}" "$@")
   local -a args=("systemd.setenv=CNI_PLUGIN=${CNI_PLUGIN}")
+  args+=("systemd.setenv=IP_MODE=${IP_MODE}")
+  args+=("systemd.setenv=POD_NET_V4_CIDR_PREFIX=${POD_NET_V4_CIDR_PREFIX}")
+  args+=("systemd.setenv=POD_NET_V6_CIDR_PREFIX=${POD_NET_V6_CIDR_PREFIX}")
 
   if [[ ! "${container_name}" ]]; then
     echo >&2 "Must specify container name"
@@ -478,7 +508,11 @@ function dind::kubeadm {
 
 function dind::configure-kubectl {
   dind::step "Setting cluster config"
-  "${kubectl}" config set-cluster dind --server="http://localhost:${APISERVER_PORT}" --insecure-skip-tls-verify=true
+  local host="127.0.0.1"
+  if [[ $IP_MODE = "ipv6" ]]; then
+    host="[::1]"
+  fi
+  "${kubectl}" config set-cluster dind --server="http://${host}:${APISERVER_PORT}" --insecure-skip-tls-verify=true
   "${kubectl}" config set-context dind --cluster=dind
   "${kubectl}" config use-context dind
 }
@@ -535,12 +569,21 @@ function dind::deploy-dashboard {
 function dind::init {
   local -a opts
   dind::set-master-opts
-  local master_ip="${dind_ip_base}.2"
-  local container_id=$(dind::run kube-master "${master_ip}" 1 127.0.0.1:${APISERVER_PORT}:8080 ${master_opts[@]+"${master_opts[@]}"})
+  local master_ip="${dind_ip_base}2"
+  local local_host="127.0.0.1"
+  if [[ ${IP_MODE} = "ipv6" ]]; then
+      local_host="[::1]"
+  fi
+  local container_id=$(dind::run kube-master "${master_ip}" 1 ${local_host}:${APISERVER_PORT}:8080 ${master_opts[@]+"${master_opts[@]}"})
   # FIXME: I tried using custom tokens with 'kubeadm ex token create' but join failed with:
   # 'failed to parse response as JWS object [square/go-jose: compact JWS format must have three parts]'
   # So we just pick the line from 'kubeadm init' output
-  kubeadm_join_flags="$(dind::kubeadm "${container_id}" init --pod-network-cidr="${POD_NETWORK_CIDR}" --skip-preflight-checks "$@" | grep '^ *kubeadm join' | sed 's/^ *kubeadm join //')"
+  local pod_net_cidr=""
+  # TODO: May want to specify each of the plugins that require --pod-network-cidr
+  if [[ ${CNI_PLUGIN} != "bridge" ]]; then
+      pod_net_cidr="--pod-network-cidr=${POD_NETWORK_CIDR}"
+  fi
+  kubeadm_join_flags="$(dind::kubeadm "${container_id}" init --apiserver-advertise-address=${master_ip} ${pod_net_cidr} --service-cidr=${SERVICE_CIDR} --skip-preflight-checks "$@" | grep '^ *kubeadm join' | sed 's/^ *kubeadm join //')"
   dind::configure-kubectl
   dind::deploy-dashboard
 }
@@ -555,7 +598,7 @@ function dind::create-node-container {
   # kube-node-1 hostname, if there are two nodes, we should pick
   # kube-node-2 and so on
   local next_node_index=${1:-$(docker ps -q --filter=label=mirantis.kubeadm_dind_cluster | wc -l | sed 's/^ *//g')}
-  local node_ip="${dind_ip_base}.$((next_node_index + 2))"
+  local node_ip="${dind_ip_base}$((next_node_index + 2))"
   local -a opts
   if [[ ${BUILD_KUBEADM} || ${BUILD_HYPERKUBE} ]]; then
     opts+=(-v dind-k8s-binaries:/k8s)
@@ -656,6 +699,37 @@ function dind::wait-for-ready {
   dind::step "Access dashboard at:" "http://localhost:${APISERVER_PORT}/ui"
 }
 
+function dind::create-static-routes-for-bridge {
+  if [[ ${CNI_PLUGIN} != bridge || $IP_MODE == "legacy" ]]; then
+      return 0
+  fi
+  echo "Creating static routes for bridge plugin"
+  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv4" ]]; then
+    local node_1_v4_gw=`docker exec kube-node-1 ifconfig dind0 | grep "inet addr" | cut -f 2 -d: | cut -f 1 -d' '`
+    local node_2_v4_gw=`docker exec kube-node-2 ifconfig dind0 | grep "inet addr" | cut -f 2 -d: | cut -f 1 -d' '`
+    if [[ -z "$node_1_v4_gw" || -z "$node_2_v4_gw" ]]; then
+	echo "WARNING! Unable to set IPv4 static routes on minion nodes - please setup manually"
+    else
+        local node_1_v4_subnet="${POD_NET_V4_CIDR_PREFIX}.1.0/24"
+        local node_2_v4_subnet="${POD_NET_V4_CIDR_PREFIX}.2.0/24"
+        docker exec -it kube-node-1 ip route add $node_2_v4_subnet via $node_2_v4_gw dev dind0
+        docker exec -it kube-node-2 ip route add $node_1_v4_subnet via $node_1_v4_gw dev dind0
+    fi
+  fi
+  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv6" ]]; then
+    local node_1_v6_gw=`docker exec -it kube-node-1 ifconfig dind0 | grep inet6 | cut -b 23- | cut -f 1 -d/`
+    local node_2_v6_gw=`docker exec -it kube-node-2 ifconfig dind0 | grep inet6 | cut -b 23- | cut -f 1 -d/`
+    if [[ -z "$node_1_v6_gw" || -z "$node_2_v6_gw" ]]; then
+	echo "WARNING! Unable to set IPv6 static routes on minion nodes - please setup manually"
+    else
+        local node_1_v6_subnet="${POD_NET_V6_CIDR_PREFIX}:1::/64"
+        local node_2_v6_subnet="${POD_NET_V6_CIDR_PREFIX}:2::/64"
+        docker exec -it kube-node-1 ip -6 route add $node_2_v6_subnet via $node_2_v6_gw dev dind0
+        docker exec -it kube-node-2 ip -6 route add $node_1_v6_subnet via $node_1_v6_gw dev dind0
+    fi
+  fi
+}
+
 function dind::up {
   dind::down
   dind::init
@@ -732,6 +806,7 @@ function dind::up {
       ;;
   esac
   dind::accelerate-kube-dns
+  dind::create-static-routes-for-bridge
   if [[ ${CNI_PLUGIN} != bridge || ${SKIP_SNAPSHOT} ]]; then
     # This is especially important in case of Calico -
     # the cluster will not recover after snapshotting
@@ -763,7 +838,7 @@ function dind::restore_container {
 }
 
 function dind::restore {
-  local master_ip="${dind_ip_base}.2"
+  local master_ip="${dind_ip_base}2"
   dind::down
   dind::step "Restoring master container"
   dind::set-master-opts
@@ -771,7 +846,11 @@ function dind::restore {
     (
       if [[ n -eq 0 ]]; then
         dind::step "Restoring master container"
-        dind::restore_container "$(dind::run -r kube-master "${master_ip}" 1 127.0.0.1:${APISERVER_PORT}:8080 ${master_opts[@]+"${master_opts[@]}"})"
+	local local_host="127.0.0.1"
+	if [[ ${IP_MODE} = "ipv6" ]]; then
+	  local_host="[::1]"
+	fi
+        dind::restore_container "$(dind::run -r kube-master "${master_ip}" 1 ${local_host}:${APISERVER_PORT}:8080 ${master_opts[@]+"${master_opts[@]}"})"
         dind::step "Master container restored"
       else
         dind::step "Restoring node container:" ${n}
@@ -982,9 +1061,13 @@ case "${1:-}" in
     shift
     dind::run-e2e-serial "$@"
     ;;
+  routes)
+    dind::create-static-routes-for-bridge
+    ;;
   *)
     echo "usage:" >&2
     echo "  $0 up" >&2
+    echo "  $0 routes" >&2
     echo "  $0 reup" >&2
     echo "  $0 down" >&2
     echo "  $0 init kubeadm-args..." >&2
