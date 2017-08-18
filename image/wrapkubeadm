@@ -49,7 +49,7 @@ apiserver_streaming_proxy_redirects='.spec.containers[0].command|=.+["--feature-
 # Update kube-proxy CIDR, enable --masquerade-all and disable conntrack (see dind::frob-proxy below)
 function dind::proxy-cidr-and-no-conntrack {
   cluster_cidr="$(ip addr show docker0 | grep -w inet | awk '{ print $2; }')"
-  echo ".items[0].spec.template.spec.containers[0].command |= .+ [\"--cluster-cidr=${cluster_cidr}\", \"--masquerade-all\", \"--conntrack-max=0\", \"--conntrack-max-per-core=0\"]"
+  echo ".items[0].spec.template.spec.containers[0].command |= .+ [\"--cluster-cidr=${cluster_cidr}\", \"--masquerade-all\", \"--conntrack-max=-1\", \"--conntrack-max-per-core=-1\"]"
 }
 
 is_master=
@@ -300,8 +300,12 @@ function dind::set-kubelet-extra-args {
 [Service]
 Environment="KUBELET_EXTRA_ARGS=${kubelet_extra_args[@]} --v=4"
 EOF
-    systemctl daemon-reload
   fi
+}
+
+function dind::set-kubelet-extra-dns-args {
+    mkdir -p /etc/systemd/system/kubelet.service.d
+    cp /config-files/20-extra-dns-args.conf /etc/systemd/system/kubelet.service.d/
 }
 
 function dind::prepare-for-kubeadm {
@@ -314,6 +318,9 @@ function dind::prepare-for-kubeadm {
   dind::ensure-binaries-and-hypokube
 
   dind::set-kubelet-extra-args
+  dind::set-kubelet-extra-dns-args
+
+  systemctl daemon-reload
 
   # enable kubelet right before starting kubeadm to avoid
   # longer delays between container restarts

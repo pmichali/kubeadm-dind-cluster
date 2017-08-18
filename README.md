@@ -123,6 +123,63 @@ The first `dind/dind-cluster.sh up` invocation can be slow because it
 needs to build the base image and Kubernetes binaries. Subsequent
 invocations are much faster.
 
+## IPv6 Mode (experimental)
+To run Kubernetes in IPv6 only mode, the following steps can be performed
+in a Kubernetes source setup. First, build a new kubeadm-dind-cluster
+image, from the DinD area:
+
+```shell
+$ cd ~/dind
+
+$ build/build-local.sh
+$ export DIND_IMAGE=mirantis/kubeadm-dind-cluster:local
+```
+
+Next, clone a Kubernetes repo from master branch:
+
+```shell
+$ git clone https://github.com/kubernetes/kubernetes.git
+$ cd kubernetes
+```
+
+As of Oct. 12th, 2017, the following IPv6 PRs are in-flight, and should
+be cherry picked and added to the repo:
+
+```
+PR #47621 "Updates RangeSize error message and tests for IPv6"
+PR #48551 "Add IPv6 support to iptables proxier"
+PR #50929 "Add kubeadm config for setting kube-proxy bind address"
+PR #50478 "Fix kube-proxy to use proper iptables commands for IPv6"
+PR #52028 "Add required family flag for conntrack IPv6 operation"
+PR #52033 "Removed the IPv6 prefix size limit for cluster-cidr"
+```
+
+In addition , a temporary commit is needed to use a new version of
+kube-dns with IPv6 support. Youc an get this at:
+
+https://github.com/leblancd/kubernetes/commit/318c75b688e224e6dd0926eb671d9358f0aeb812
+
+Lastly, set up environment variables for building and IPv6 mode and
+then bring up the cluster:
+
+```shell
+$ export BUILD_KUBEADM=y
+$ export BUILD_HYPERKUBE=y
+$ export IP_MODE=ipv6
+
+$ ../dind-cluster.sh up
+```
+
+Note: there are additional customizations that you can make for IPv6,
+to set the prefix used for DNS64, subnet prefix to use for DinD, and
+the service subnet CIDR:
+
+```shell
+export DNS64_PREFIX=fd00:77:64:ff9b::
+export DIND_SUBNET=fd00:77::
+export SERVICE_CIDR=fd00:77:30::/110
+```
+
 ## Configuration
 You may edit `config.sh` to override default settings. See comments in
 [the file](config.sh) for more info. In particular, you can specify
