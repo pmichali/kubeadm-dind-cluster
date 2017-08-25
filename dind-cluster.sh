@@ -509,9 +509,9 @@ function dind::kubeadm {
 
 function dind::configure-kubectl {
   dind::step "Setting cluster config"
-  local host="127.0.0.1"
+  local host="localhost"
   if [[ $IP_MODE = "ipv6" ]]; then
-    host="[::1]"
+    host="[${DIND_SUBNET}2]"
   fi
   "${kubectl}" config set-cluster dind --server="http://${host}:${APISERVER_PORT}" --insecure-skip-tls-verify=true
   "${kubectl}" config set-context dind --cluster=dind
@@ -744,7 +744,7 @@ function dind::create-static-routes-for-bridge {
 	      docker exec -it ${host} ip route add ${subnet} via ${v4GWs[$j]} dev dind0
 	  fi
 	  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv6" ]]; then
-	      subnet="${POD_NET_V6_CIDR_PREFIX}:${j}::/${KUBE_SUBNET_PREFIX}"
+	      subnet="${POD_NET_V6_CIDR_PREFIX}:${j}::/${DIND_SUBNET_PREFIX}"
 	      docker exec -it ${host} ip -6 route add ${subnet} via ${v6GWs[$j]} dev dind0
 	  fi
       done

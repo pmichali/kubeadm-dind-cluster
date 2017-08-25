@@ -189,30 +189,10 @@ fi
 # make docker's kube-dns friendly
 old_ns="$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf)"
 if [[ ${old_ns} ]]; then
-  IP=$IPV4
   if [[ $IP_MODE = "ipv6" ]]; then
     sed "s/^${IP}/${IPV6}/g" /etc/hosts > /etc/hosts.updated
     cp /etc/hosts /etc/hosts.orig
     cat /etc/hosts.updated >/etc/hosts  
-    # IP="64:FF9B::808:808"
-    IP=$(echo $IPV6 | sed 's,::.*,::1,')
   fi
-
-  # sed -i doesn't work here because of docker's handling of /etc/resolv.conf
-  sed "s/^nameserver.*/nameserver ${IP}/" /etc/resolv.conf >/etc/resolv.conf.updated
-  cp /etc/resolv.conf /etc/resolv.conf.orig 
-  cat /etc/resolv.conf.updated >/etc/resolv.conf
   exit 0
-  # TODO: Will see if not needed. Check IPv4 too.
-  while true; do
-    if [[ $IP_MODE = "ipv6" ]]; then
-      socat udp6-recvfrom:53,reuseaddr,fork,bind=[${IPV6}] UDP4:${old_ns}:53 || true
-    else
-      socat udp4-recvfrom:53,reuseaddr,fork,bind=${IPV4} UDP:${old_ns}:53 || true
-    fi
-    echo "WARNING: restarting socat" >&2
-  done
-else
-  echo "WARNING: couldn't get nameserver" >&2
-  exit 1  
 fi
