@@ -48,24 +48,26 @@ if [[ ! ${EMBEDDED_CONFIG:-} ]]; then
 fi
 
 IP_MODE="${IP_MODE:-legacy}"  # legacy, ipv4, ipv6, dualstack
-# TODO: Consider adding /prefix to allow customizing
+# NOTE: Prefix is fixed to /16 and /64 in dindnet, for IPv4 and IPv6, respectively
 POD_NET_V4_CIDR_PREFIX="${POD_NET_V4_CIDR_PREFIX:-10.244}"
-POD_NET_V6_CIDR_PREFIX="${POD_NET_V6_CIDR_PREFIX:-2001:200}"
+POD_NET_V6_CIDR_PREFIX="${POD_NET_V6_CIDR_PREFIX:-fd00:20}"
 
 CNI_PLUGIN="${CNI_PLUGIN:-bridge}"
 ETCD_HOST="${ETCD_HOST:-127.0.0.1}"
 POD_NETWORK_CIDR="${POD_NETWORK_CIDR:-10.244.0.0/16}"
 if [[ ${IP_MODE} = "ipv6" ]]; then
-    DIND_SUBNET="${DIND_SUBNET:-2001:100::}"
+    DIND_SUBNET="${DIND_SUBNET:-fd00:10::}"
     dind_ip_base=${DIND_SUBNET}
     ETCD_HOST="::1"
     KUBE_RSYNC_ADDR="${KUBE_RSYNC_ADDR:-::1}"
-    SERVICE_CIDR="${SERVICE_CIDR:-2001:300::/110}"
+    SERVICE_CIDR="${SERVICE_CIDR:-fd00:30::/110}"
+    DIND_SUBNET_PREFIX="${DIND_SUBNET_PREFIX:-64}"
 else
     DIND_SUBNET="${DIND_SUBNET:-10.192.0.0}"
     dind_ip_base="$(echo "${DIND_SUBNET}" | sed 's/0$//')"
     KUBE_RSYNC_ADDR="${KUBE_RSYNC_ADDR:-127.0.0.1}"
     SERVICE_CIDR="${SERVICE_CIDR:-10.96.0.0/12}"
+    DIND_SUBNET_PREFIX="${DIND_SUBNET_PREFIX:-16}"
 fi
 DIND_IMAGE="${DIND_IMAGE:-}"
 BUILD_KUBEADM="${BUILD_KUBEADM:-}"
@@ -383,14 +385,12 @@ function dind::ensure-binaries {
 }
 
 function dind::ensure-network {
-  local prefix="16"
-  local v6flag=""
   if ! docker network inspect kubeadm-dind-net >&/dev/null; then
+    local v6flag=""
     if [[ ${IP_MODE} = "ipv6" ]]; then
-      prefix="64"
       v6flag="--ipv6"
     fi
-    docker network create ${v6flag} --subnet="${DIND_SUBNET}/${prefix}" kubeadm-dind-net >/dev/null
+    docker network create ${v6flag} --subnet="${DIND_SUBNET}/${DIND_SUBNET_PREFIX}" --gateway="${DIND_SUBNET}1" kubeadm-dind-net >/dev/null
   fi
 }
 
@@ -472,6 +472,7 @@ function dind::run {
   docker run \
          -d --privileged \
          --net kubeadm-dind-net \
+         --dns ${DIND_SUBNET}1 \
          --name "${container_name}" \
          --hostname "${container_name}" \
          -l mirantis.kubeadm_dind_cluster \
@@ -743,7 +744,7 @@ function dind::create-static-routes-for-bridge {
 	      docker exec -it ${host} ip route add ${subnet} via ${v4GWs[$j]} dev dind0
 	  fi
 	  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv6" ]]; then
-	      subnet="${POD_NET_V6_CIDR_PREFIX}:${j}::/64"
+	      subnet="${POD_NET_V6_CIDR_PREFIX}:${j}::/${KUBE_SUBNET_PREFIX}"
 	      docker exec -it ${host} ip -6 route add ${subnet} via ${v6GWs[$j]} dev dind0
 	  fi
       done
