@@ -390,7 +390,7 @@ function dind::ensure-network {
     if [[ ${IP_MODE} = "ipv6" ]]; then
       v6flag="--ipv6"
     fi
-    docker network create ${v6flag} --subnet="${DIND_SUBNET}/${DIND_SUBNET_PREFIX}" --gateway="${DIND_SUBNET}1" kubeadm-dind-net >/dev/null
+    docker network create ${v6flag} --subnet="${DIND_SUBNET}/${DIND_SUBNET_PREFIX}" --gateway="${dind_ip_base}1" kubeadm-dind-net >/dev/null
   fi
 }
 
@@ -472,7 +472,7 @@ function dind::run {
   docker run \
          -d --privileged \
          --net kubeadm-dind-net \
-         --dns ${DIND_SUBNET}1 \
+         --dns ${dind_ip_base}1 \
          --name "${container_name}" \
          --hostname "${container_name}" \
          -l mirantis.kubeadm_dind_cluster \
@@ -511,7 +511,7 @@ function dind::configure-kubectl {
   dind::step "Setting cluster config"
   local host="localhost"
   if [[ $IP_MODE = "ipv6" ]]; then
-    host="[${DIND_SUBNET}2]"
+    host="[${dind_ip_base}2]"
   fi
   "${kubectl}" config set-cluster dind --server="http://${host}:${APISERVER_PORT}" --insecure-skip-tls-verify=true
   "${kubectl}" config set-context dind --cluster=dind
