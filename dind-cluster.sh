@@ -62,6 +62,7 @@ if [[ ${IP_MODE} = "ipv6" ]]; then
     KUBE_RSYNC_ADDR="${KUBE_RSYNC_ADDR:-::1}"
     SERVICE_CIDR="${SERVICE_CIDR:-fd00:30::/110}"
     DIND_SUBNET_PREFIX="${DIND_SUBNET_PREFIX:-64}"
+    DNS64_SERVERS="${DNS64_SERVERS:-8.8.8.8}"
 else
     DIND_SUBNET="${DIND_SUBNET:-10.192.0.0}"
     dind_ip_base="$(echo "${DIND_SUBNET}" | sed 's/0$//')"
@@ -412,6 +413,38 @@ function dind::ensure-volume {
   dind::create-volume "${name}"
 }
 
+function dind::ensure-dns {
+    if [[ ${IP_MODE} != "ipv6" ]]; then
+	dns_server=${dind_ip_base}
+    else
+	dns_server=${dind_ip_base}100
+	if ! docker inspect bind9 >&/dev/null; then
+	    dind::start-dns64
+	fi
+    fi
+}
+
+function dind::start-dns64 {
+    BIND9_PATH=${HOME}/bind9
+    if [[ ! -e ${BIND9_PATH}/conf/named.conf ]]; then
+	mkdir -p ${BIND9_PATH}/conf ${BIND9_PATH}/cache
+	cat >${HOME}/bind9/conf/named.conf <<BIND9_EOF
+options {
+    directory "/var/bind";
+    forwarders {
+        ${DNS64_SERVERS};
+    };
+    auth-nxdomain no;    # conform to RFC1035
+    listen-on-v6 { any; };
+    dns64 64:ff9b::/96 {
+    } ;
+};
+BIND9_EOF
+    fi
+    docker run -d --name bind9 --net kubeadm-dind-net --ip6 ${dns_server} --label mirantis.kubeadm_dind_cluster \
+    -p 53:53 -p 53:53/udp -v ${BIND9_PATH}/conf/named.conf:/etc/bind/named.conf resystit/bind9:latest
+}
+
 function dind::run {
   local reuse_volume=
   if [[ $1 = -r ]]; then
@@ -464,6 +497,7 @@ function dind::run {
   volume_name="kubeadm-dind-${container_name}"
   dind::ensure-network
   dind::ensure-volume ${reuse_volume} "${volume_name}"
+  dind::ensure-dns
 
   # TODO: create named volume for binaries and mount it to /k8s
   # in case of the source build
@@ -472,7 +506,7 @@ function dind::run {
   docker run \
          -d --privileged \
          --net kubeadm-dind-net \
-         --dns ${dind_ip_base}1 \
+         --dns ${dns_server} \
          --name "${container_name}" \
          --hostname "${container_name}" \
          -l mirantis.kubeadm_dind_cluster \
@@ -1084,6 +1118,10 @@ case "${1:-}" in
     ;;
   routes)
     dind::create-static-routes-for-bridge
+    ;;
+  pcm)
+      dind::ensure-network
+      dind::ensure-dns
     ;;
   *)
     echo "usage:" >&2
