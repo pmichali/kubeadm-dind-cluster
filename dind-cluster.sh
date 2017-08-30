@@ -64,6 +64,7 @@ if [[ ${IP_MODE} = "ipv6" ]]; then
     DIND_SUBNET_PREFIX="${DIND_SUBNET_PREFIX:-64}"
     DIND_DNS64_SERVER="${DIND_DNS64_SERVER:-8.8.8.8}"
     DIND_USE_DNS=${DIND_USE_DNS:-true}
+    DNS64_PREFIX_CIDR="${DNS64_PREFIX_CIDR:-64:ff9b::/96}"
     DIND_USE_NAT66=${DIND_USE_NAT66:-true}
     DIND_USE_NAT64=${DIND_USE_NAT64:-true}
 else
@@ -439,12 +440,12 @@ options {
     };
     auth-nxdomain no;    # conform to RFC1035
     listen-on-v6 { any; };
-    dns64 64:ff9b::/96 {
+    dns64 ${DNS64_PREFIX_CIDR} {
     } ;
 };
 BIND9_EOF
     docker run -d --name bind9 --net kubeadm-dind-net --ip6 ${dns_server} --label mirantis.kubeadm_dind_cluster \
-	-p 53:53 -p 53:53/udp -v ${bind9_path}/conf/named.conf:/etc/bind/named.conf resystit/bind9:latest >/dev/null
+	-v ${bind9_path}/conf/named.conf:/etc/bind/named.conf resystit/bind9:latest >/dev/null
 }
 
 function dind::ensure-nat {
@@ -1140,6 +1141,7 @@ case "${1:-}" in
   pcm)
       dind::ensure-network
       dind::ensure-dns
+      dind::ensure-nat
     ;;
   *)
     echo "usage:" >&2
