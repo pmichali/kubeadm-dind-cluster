@@ -65,8 +65,8 @@ if [[ ${IP_MODE} = "ipv6" ]]; then
     DIND_DNS64_SERVER="${DIND_DNS64_SERVER:-8.8.8.8}"
     DIND_USE_DNS=${DIND_USE_DNS:-true}
     DNS64_PREFIX_CIDR="${DNS64_PREFIX_CIDR:-64:ff9b::/96}"
-    DIND_USE_NAT66=${DIND_USE_NAT66:-true}
-    DIND_USE_NAT64=${DIND_USE_NAT64:-true}
+    DIND_USE_NAT66=${DIND_USE_NAT66:-false}
+    DIND_USE_NAT64=${DIND_USE_NAT64:-false}
 else
     DIND_SUBNET="${DIND_SUBNET:-10.192.0.0}"
     dind_ip_base="$(echo "${DIND_SUBNET}" | sed 's/0$//')"
@@ -441,7 +441,8 @@ options {
     auth-nxdomain no;    # conform to RFC1035
     listen-on-v6 { any; };
     dns64 ${DNS64_PREFIX_CIDR} {
-    } ;
+        exclude { any; };
+    };
 };
 BIND9_EOF
     docker run -d --name bind9 --net kubeadm-dind-net --ip6 ${dns_server} --label mirantis.kubeadm_dind_cluster \
@@ -449,13 +450,13 @@ BIND9_EOF
 }
 
 function dind::ensure-nat {
-    if [[ $DIND_USE_NAT66 = true && $IP_MODE = "ipv6" ]]; then
+    if [[ $IP_MODE = "ipv6" && $DIND_USE_NAT66 = true ]]; then
 	if ! docker inspect ipv6nat >&/dev/null; then
 	    docker run -d --label mirantis.kubeadm_dind_cluster --privileged --net=host \
 		-v /var/run/docker.sock:/var/run/docker.sock:ro -v /lib/modules:/lib/modules:ro robbertkl/ipv6nat >/dev/null
 	fi
     fi
-    # if [[ $DIND_USE_NAT64 = true && $IP_MODE = "ipv6" ]]; then
+    # if [[  $IP_MODE = "ipv6" && $DIND_USE_NAT64 = true ]]; then
     # 	if ! docker inspect nat64 >&/dev/null; then
     # 	    docker run -d --label mirantis.kubeadm_dind_cluster --privileged --net=host \
     # 		-v /var/run/docker.sock:/var/run/docker.sock:ro -v /lib/modules:/lib/modules:ro nat64:latest >/dev/null
