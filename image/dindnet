@@ -169,13 +169,16 @@ if [[ "${CNI_BRIDGE_NETWORK_OFFSET:-}" ]]; then
     sysctl -w net.ipv6.conf.all.disable_ipv6=0
     sysctl -w net.ipv6.conf.all.forwarding=1
   fi
+  dind::setup-bridge
   if [[ $IP_MODE != "legacy" ]]; then
     # TODO: Remove, once DinD is able to use v0.6.0 CNI release
-    # Doing this before manipulating I/Fs
-    curl -sSL --retry 5 https://github.com/containernetworking/plugins/releases/download/v0.6.0-rc1/cni-plugins-amd64-v0.6.0-rc1.tgz | \
+    protocol=""
+    if [[ $IP_MODE == "ipv6" ]]; then
+	protocol="-6"
+    fi
+    curl -sSL $protocol --retry 5 https://github.com/containernetworking/plugins/releases/download/v0.6.0-rc1/cni-plugins-amd64-v0.6.0-rc1.tgz | \
 	tar -C /opt/cni/bin -xz
   fi
-  dind::setup-bridge
   if [[ $IP_MODE = "legacy" ]]; then
     dind::setup-config-file
   else

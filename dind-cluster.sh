@@ -62,7 +62,7 @@ if [[ ${IP_MODE} = "ipv6" ]]; then
     KUBE_RSYNC_ADDR="${KUBE_RSYNC_ADDR:-::1}"
     SERVICE_CIDR="${SERVICE_CIDR:-fd00:30::/110}"
     DIND_SUBNET_PREFIX="${DIND_SUBNET_PREFIX:-64}"
-    DIND_DNS64_SERVER="${DIND_DNS64_SERVER:-8.8.8.8}"
+    DIND_DNS64_SERVER="${DIND_DNS64_SERVER:-64:ff9b::808:808}"
     DIND_USE_DNS=${DIND_USE_DNS:-true}
     DNS64_PREFIX_CIDR="${DNS64_PREFIX_CIDR:-64:ff9b::/96}"
     DIND_USE_NAT66=${DIND_USE_NAT66:-false}
@@ -435,6 +435,7 @@ function dind::start-dns64 {
     cat >${bind9_path}/conf/named.conf <<BIND9_EOF
 options {
     directory "/var/bind";
+    allow-query { any; };
     forwarders {
         ${DIND_DNS64_SERVER};
     };
@@ -445,8 +446,12 @@ options {
     };
 };
 BIND9_EOF
-    docker run -d --name bind9 --net kubeadm-dind-net --ip6 ${dns_server} --label mirantis.kubeadm_dind_cluster \
-	-v ${bind9_path}/conf/named.conf:/etc/bind/named.conf resystit/bind9:latest >/dev/null
+    docker run -d --name bind9 --net kubeadm-dind-net --ip6 ${dns_server} --dns ${dns_server} \
+	   --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.all.forwarding=1 \
+	   --privileged=true --label mirantis.kubeadm_dind_cluster --hostname bind9 \
+	   -v ${bind9_path}/conf/named.conf:/etc/bind/named.conf resystit/bind9:latest >/dev/null
+    ipv4_addr=$(docker exec bind9 ip addr list eth0 | grep "inet" | awk '$1 == "inet" {print $2}')
+    docker exec bind9 ip addr del $ipv4_addr dev eth0
 }
 
 function dind::ensure-nat {
