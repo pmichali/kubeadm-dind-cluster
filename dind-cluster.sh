@@ -419,12 +419,12 @@ function dind::ensure-volume {
 
 function dind::ensure-dns {
     if [[ $IP_MODE != "ipv6" ]]; then
-	dns_server=${dind_ip_base}1
+        dns_server=${dind_ip_base}1
     elif $DIND_USE_DNS = true ; then
-	dns_server=${dind_ip_base}100
-	if ! docker inspect bind9 >&/dev/null; then
-	    dind::start-dns64
-	fi
+        dns_server=${dind_ip_base}100
+        if ! docker inspect bind9 >&/dev/null; then
+            dind::start-dns64
+        fi
     fi
 }
 
@@ -447,26 +447,27 @@ options {
 };
 BIND9_EOF
     docker run -d --name bind9 --net kubeadm-dind-net --ip6 ${dns_server} --dns ${dns_server} \
-	   --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.all.forwarding=1 \
-	   --privileged=true --label mirantis.kubeadm_dind_cluster --hostname bind9 \
-	   -v ${bind9_path}/conf/named.conf:/etc/bind/named.conf resystit/bind9:latest >/dev/null
+           --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.all.forwarding=1 \
+           --privileged=true --label mirantis.kubeadm_dind_cluster --hostname bind9 \
+           -v ${bind9_path}/conf/named.conf:/etc/bind/named.conf resystit/bind9:latest >/dev/null
     ipv4_addr=$(docker exec bind9 ip addr list eth0 | grep "inet" | awk '$1 == "inet" {print $2}')
     docker exec bind9 ip addr del $ipv4_addr dev eth0
 }
 
 function dind::ensure-nat {
     if [[ $IP_MODE = "ipv6" && $DIND_USE_NAT66 = true ]]; then
-	if ! docker inspect ipv6nat >&/dev/null; then
-	    docker run -d --label mirantis.kubeadm_dind_cluster --privileged --net=host \
-		-v /var/run/docker.sock:/var/run/docker.sock:ro -v /lib/modules:/lib/modules:ro robbertkl/ipv6nat >/dev/null
-	fi
+        if docker ps | grep ipv6nat >&/dev/null; then
+            docker run -d --label mirantis.kubeadm_dind_cluster --privileged --net=host \
+                -v /var/run/docker.sock:/var/run/docker.sock:ro -v /lib/modules:/lib/modules:ro robbertkl/ipv6nat >/dev/null
+        fi
     fi
-    # if [[  $IP_MODE = "ipv6" && $DIND_USE_NAT64 = true ]]; then
-    # 	if ! docker inspect nat64 >&/dev/null; then
-    # 	    docker run -d --label mirantis.kubeadm_dind_cluster --privileged --net=host \
-    # 		-v /var/run/docker.sock:/var/run/docker.sock:ro -v /lib/modules:/lib/modules:ro nat64:latest >/dev/null
-    # 	fi
-    # fi
+    if [[  $IP_MODE = "ipv6" && $DIND_USE_NAT64 = true ]]; then
+        if ! docker ps | grep nat64-install >&/dev/null; then
+            docker run -d --name jool --hostname jool --net host --label mirantis.kubeadm_dind_cluster \
+                   --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.all.forwarding=1 \
+                   --privileged -v /lib/modules:/lib/modules nat64-install:latest >/dev/null
+        fi
+    fi
 }
 
 function dind::run {
@@ -771,41 +772,41 @@ function dind::create-static-routes-for-bridge {
   for ((n=1; n <= ${NUM_NODES}; n++)); do
       host="kube-node-${n}"
       if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv4" ]]; then
-	  gw=`docker exec $host ifconfig dind0 | grep "inet addr" | cut -f 2 -d: | cut -f 1 -d' '`
-	  if [[ -z $gw ]]; then
-	      echo "WARNING! ${host} doesn't have an IPv4 address on dind0 yet. Please setup static routes later."
-	      return 0
-	  fi
-	  v4GWs[$n]=$gw
+          gw=`docker exec $host ifconfig dind0 | grep "inet addr" | cut -f 2 -d: | cut -f 1 -d' '`
+          if [[ -z $gw ]]; then
+              echo "WARNING! ${host} doesn't have an IPv4 address on dind0 yet. Please setup static routes later."
+              return 0
+          fi
+          v4GWs[$n]=$gw
       fi
       if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv6" ]]; then
-	  if [[ $IP_MODE = "dualstack" ]]; then
-	      gw=`docker exec $host ifconfig dind0 | grep inet6 | head -1 | cut -b 23- | cut -f 1 -d/`
-	  else
-	      gw=`docker exec $host ifconfig dind0 | grep inet6 | grep -i global | head -1 | cut -b 23- | cut -f 1 -d/`
-	  fi
-	  if [[ -z $gw ]]; then
-	      echo "WARNING! ${host} doesn't have an IPv6 address on dind0 yet. Please setup static routes later."
-	      return 0
-	  fi
-	  v6GWs[$n]=$gw
+          if [[ $IP_MODE = "dualstack" ]]; then
+              gw=`docker exec $host ifconfig dind0 | grep inet6 | head -1 | cut -b 23- | cut -f 1 -d/`
+          else
+              gw=`docker exec $host ifconfig dind0 | grep inet6 | grep -i global | head -1 | cut -b 23- | cut -f 1 -d/`
+          fi
+          if [[ -z $gw ]]; then
+              echo "WARNING! ${host} doesn't have an IPv6 address on dind0 yet. Please setup static routes later."
+              return 0
+          fi
+          v6GWs[$n]=$gw
       fi
   done
   # If here, we have IPv4 and/or IPv6 gateways for each node. Add static routes
   for ((i=1; i <= NUM_NODES; i++)); do
       for ((j=1; j <= NUM_NODES; j++)); do
-	  if [[ $i = $j ]]; then
-	      continue
-	  fi
-	  host="kube-node-${i}"
-	  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv4" ]]; then
-	      subnet="${POD_NET_V4_CIDR_PREFIX}.${j}.0/24"
-	      docker exec -it ${host} ip route add ${subnet} via ${v4GWs[$j]} dev dind0
-	  fi
-	  if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv6" ]]; then
-	      subnet="${POD_NET_V6_CIDR_PREFIX}:${j}::/${DIND_SUBNET_PREFIX}"
-	      docker exec -it ${host} ip -6 route add ${subnet} via ${v6GWs[$j]} dev dind0
-	  fi
+          if [[ $i = $j ]]; then
+              continue
+          fi
+          host="kube-node-${i}"
+          if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv4" ]]; then
+              subnet="${POD_NET_V4_CIDR_PREFIX}.${j}.0/24"
+              docker exec -it ${host} ip route add ${subnet} via ${v4GWs[$j]} dev dind0
+          fi
+          if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv6" ]]; then
+              subnet="${POD_NET_V6_CIDR_PREFIX}:${j}::/${DIND_SUBNET_PREFIX}"
+              docker exec -it ${host} ip -6 route add ${subnet} via ${v6GWs[$j]} dev dind0
+          fi
       done
   done
 }
@@ -926,10 +927,10 @@ function dind::restore {
     (
       if [[ n -eq 0 ]]; then
         dind::step "Restoring master container"
-	local local_host="127.0.0.1"
-	if [[ ${IP_MODE} = "ipv6" ]]; then
-	  local_host="[::1]"
-	fi
+        local local_host="127.0.0.1"
+        if [[ ${IP_MODE} = "ipv6" ]]; then
+          local_host="[::1]"
+        fi
         dind::restore_container "$(dind::run -r kube-master "${master_ip}" 1 ${local_host}:${APISERVER_PORT}:8080 ${master_opts[@]+"${master_opts[@]}"})"
         dind::step "Master container restored"
       else
