@@ -456,17 +456,35 @@ BIND9_EOF
 
 function dind::ensure-nat {
     if [[ $IP_MODE = "ipv6" && $DIND_USE_NAT66 = true ]]; then
-        if docker ps | grep ipv6nat >&/dev/null; then
+        if ! docker ps | grep ipv6nat >&/dev/null; then
             docker run -d --label mirantis.kubeadm_dind_cluster --privileged --net=host \
                 -v /var/run/docker.sock:/var/run/docker.sock:ro -v /lib/modules:/lib/modules:ro robbertkl/ipv6nat >/dev/null
         fi
     fi
     if [[  $IP_MODE = "ipv6" && $DIND_USE_NAT64 = true ]]; then
-        if ! docker ps | grep nat64-install >&/dev/null; then
+        if ! docker ps | grep jool >&/dev/null; then
             docker run -d --name jool --hostname jool --net host --label mirantis.kubeadm_dind_cluster \
-                   --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.all.forwarding=1 \
-                   --privileged -v /lib/modules:/lib/modules nat64-install:latest >/dev/null
-        fi
+               --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.all.forwarding=1 \
+               --privileged -v /lib/modules:/lib/modules nat64-install:latest >/dev/null
+	    local n=120
+	    while true; do
+		if docker exec jool ls /init_done >&/dev/null; then
+		    break
+		fi
+		if ((--n == 0)); then
+		    echo "ERROR: Timeout waiting for NAT64 container to become ready"
+		    exit 1
+		fi
+		sleep 1
+	    done
+	    # Could pass info into container, when run. For now, just a hack
+	    local intf=$(ip route | grep default | cut -f 5 -d" ")
+	    local v4_ip=$(ifconfig $intf | grep "inet addr" | cut -f 2 -d':' | cut -f1 -d" ")
+	    docker exec jool /sbin/modprobe jool
+	    docker exec jool jool -4 --add $v4_ip 7000-8000
+	    docker exec jool jool -6 --add $DNS64_PREFIX_CIDR
+	    docker exec jool jool --enable
+	fi
     fi
 }
 
@@ -956,6 +974,11 @@ function dind::restore {
 }
 
 function dind::down {
+  if [[  $IP_MODE = "ipv6" && $DIND_USE_NAT64 = true ]]; then
+      if docker ps | grep jool >&/dev/null; then
+          docker exec jool jool --disable || true
+      fi
+  fi
   docker ps -a -q --filter=label=mirantis.kubeadm_dind_cluster | while read container_id; do
     dind::step "Removing container:" "${container_id}"
     docker rm -fv "${container_id}"
