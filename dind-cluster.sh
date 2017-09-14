@@ -1155,6 +1155,11 @@ case "${1:-}" in
   routes)
     dind::create-static-routes-for-bridge
     ;;
+  pcm)
+      dind::ensure-network
+      dind::ensure-nat
+      dind::ensure-dns
+    ;;
   *)
     echo "usage:" >&2
     echo "  $0 up" >&2
