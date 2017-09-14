@@ -63,16 +63,11 @@ if [[ ${IP_MODE} = "ipv6" ]]; then
     SERVICE_CIDR="${SERVICE_CIDR:-fd00:30::/110}"
     DIND_SUBNET_PREFIX="${DIND_SUBNET_PREFIX:-64}"
     REMOTE_DNS64_V4SERVER="${REMOTE_DNS64_V4SERVER:-8.8.8.8}"
-    LOCAL_DNS64_SERVER=${DIND_SUBNET}200
-    DIND_USE_DNS=${DIND_USE_DNS:-true}
+    LOCAL_NAT64_SERVER=${DIND_SUBNET}200
     DNS64_PREFIX="${DNS64_PREFIX:-64:ff9b::}"
     DNS64_PREFIX_SIZE="${DNS64_PREFIX_SIZE:-96}"
     DNS64_PREFIX_CIDR="${DNS64_PREFIX}/${DNS64_PREFIX_SIZE}"
-    DIND_USE_NAT64=${DIND_USE_NAT64:-true}
-    dns_server=${dind_ip_base}1
-    if $DIND_USE_DNS = true ; then
-        dns_server=${dind_ip_base}100
-    fi
+    dns_server=${dind_ip_base}100
 else
     DIND_SUBNET="${DIND_SUBNET:-10.192.0.0}"
     dind_ip_base="$(echo "${DIND_SUBNET}" | sed 's/0$//')"
@@ -426,7 +421,7 @@ function dind::ensure-volume {
 }
 
 function dind::ensure-dns {
-    if [[ $IP_MODE = "ipv6" && $DIND_USE_DNS = true ]]; then
+    if [[ $IP_MODE = "ipv6" ]]; then
         if ! docker inspect bind9 >&/dev/null; then
             dind::start-dns64
         fi
@@ -458,15 +453,15 @@ BIND9_EOF
 	   resystit/bind9:latest >/dev/null
     ipv4_addr=$(docker exec bind9 ip addr list eth0 | grep "inet" | awk '$1 == "inet" {print $2}')
     docker exec bind9 ip addr del $ipv4_addr dev eth0
-    docker exec bind9 ip -6 route add $DNS64_PREFIX_CIDR via $LOCAL_DNS64_SERVER
+    docker exec bind9 ip -6 route add $DNS64_PREFIX_CIDR via $LOCAL_NAT64_SERVER
 }
 
 function dind::ensure-nat {
-    if [[  $IP_MODE = "ipv6" && $DIND_USE_NAT64 = true ]]; then
+    if [[  $IP_MODE = "ipv6" ]]; then
         if ! docker ps | grep tayga >&/dev/null; then
             docker run -d --name tayga --hostname tayga --net kubeadm-dind-net --label mirantis.kubeadm_dind_cluster \
 		   --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.all.forwarding=1 \
-		   --privileged=true --ip 172.18.0.200 --ip6 $LOCAL_DNS64_SERVER --dns $REMOTE_DNS64_V4SERVER --dns $dns_server \
+		   --privileged=true --ip 172.18.0.200 --ip6 $LOCAL_NAT64_SERVER --dns $REMOTE_DNS64_V4SERVER --dns $dns_server \
 		   -e TAYGA_CONF_PREFIX=$DNS64_PREFIX_CIDR -e TAYGA_CONF_IPV4_ADDR=172.18.0.200 \
 		   danehans/tayga:latest >/dev/null
 	    # TODO Way to add route w/o sudo? Need to check/create, as "clean" may remove route
@@ -502,7 +497,10 @@ function dind::run {
   args+=("systemd.setenv=IP_MODE=${IP_MODE}")
   args+=("systemd.setenv=POD_NET_V4_CIDR_PREFIX=${POD_NET_V4_CIDR_PREFIX}")
   args+=("systemd.setenv=POD_NET_V6_CIDR_PREFIX=${POD_NET_V6_CIDR_PREFIX}")
-
+  if [[ ${IP_MODE} = "ipv6" ]]; then
+      args+=("systemd.setenv=DNS64_PREFIX_CIDR=${DNS64_PREFIX_CIDR}")
+      args+=("systemd.setenv=LOCAL_NAT64_SERVER=${LOCAL_NAT64_SERVER}")
+  fi
   if [[ ! "${container_name}" ]]; then
     echo >&2 "Must specify container name"
     exit 1
