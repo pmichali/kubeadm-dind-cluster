@@ -55,11 +55,11 @@ function dind::setup-config-file {
   # non-network bits according to CNI_BRIDGE_NETWORK_SIZE
   CNI_BRIDGE_NETWORK_SIZE=${CNI_BRIDGE_NETWORK_SIZE:-24}
   NETWORK=$(ip route | grep dind0 | grep -v default | sed 's,/.*,,')
-  NETWORK_SIZE=$(echo $IP_CIDR | sed 's,.*/,,')
+  NETWORK_SIZE=$(echo $IPV4_CIDR | sed 's,.*/,,')
   
   DEFAULT_GW=$(ip route | grep default | sed 's/eth0/dind0/' | awk '{print $3;}')
 
-  WILDCARD=$(ipcalc $IP_CIDR | grep Wildcard | awk '{print $2;}')
+  WILDCARD=$(ipcalc $IPV4_CIDR | grep Wildcard | awk '{print $2;}')
   IFS=. read -r i1 i2 i3 i4 <<< ${IPV4}
   IFS=. read -r n1 n2 n3 n4 <<< ${NETWORK}
   IFS=. read -r o1 o2 o3 o4 <<< ${CNI_BRIDGE_NETWORK_OFFSET}
@@ -188,7 +188,7 @@ if [[ "${CNI_BRIDGE_NETWORK_OFFSET:-}" ]]; then
 fi
 
 if [[ $IP_MODE = "ipv6" ]]; then
-  sed -e "s/^${IPV4}/${IPV6}/g" -e "s/127.0.0.1.*localhost/::1\tlocalhost/" /etc/hosts > /etc/hosts.updated
+  sed -e "s/^${IPV4}/${IPV6}/g" /etc/hosts > /etc/hosts.updated
   cp /etc/hosts /etc/hosts.orig
   cat /etc/hosts.updated >/etc/hosts
   # Removed embedded docker DNS
