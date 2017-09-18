@@ -35,9 +35,11 @@ function dind::setup-bridge {
   if [[ $IP_MODE != "ipv6" ]]; then
     ip addr add $IPV4_CIDR dev dind0
     ip route add default via $v4_gw dev dind0
+    NS_IP=$IPV4
   else  # IPv6 only
     IPV6_CIDR=$(ip addr show eth0 | grep -w inet6 | grep -i global | head -1 | awk '{ print $2; }')
     IPV6=$(echo $IPV6_CIDR | sed 's,/.*,,')
+    NS_IP=$IPV6
     ip addr del $IPV6_CIDR dev eth0
     ip addr add $IPV6_CIDR dev dind0
     if [[ ! -z "$v6_gw" ]]; then
@@ -191,8 +193,7 @@ if [[ $IP_MODE = "ipv6" ]]; then
   sed -e "s/^${IPV4}/${IPV6}/g" /etc/hosts > /etc/hosts.updated
   cp /etc/hosts /etc/hosts.orig
   cat /etc/hosts.updated >/etc/hosts
-  # Removed embedded docker DNS
-  sed "s/^nameserver.*127\.0\.0\.11/# Removed 127.0.0.1/" /etc/resolv.conf >/etc/resolv.conf.updated
-  cp /etc/resolv.conf /etc/resolv.conf.orig
-  cat /etc/resolv.conf.updated >/etc/resolv.conf
 fi
+sed "s/^nameserver.*127\.0\.0\.11/nameserver ${NS_IP}/" /etc/resolv.conf >/etc/resolv.conf.updated
+cp /etc/resolv.conf /etc/resolv.conf.orig
+cat /etc/resolv.conf.updated >/etc/resolv.conf
