@@ -61,7 +61,7 @@ if [[ ${IP_MODE} = "ipv6" ]]; then
     ETCD_HOST="::1"
     KUBE_RSYNC_ADDR="${KUBE_RSYNC_ADDR:-::1}"
     SERVICE_CIDR="${SERVICE_CIDR:-fd00:30::/110}"
-    DIND_SUBNET_PREFIX="${DIND_SUBNET_PREFIX:-64}"
+    DIND_SUBNET_SIZE="${DIND_SUBNET_SIZE:-64}"
     REMOTE_DNS64_V4SERVER="${REMOTE_DNS64_V4SERVER:-8.8.8.8}"
     LOCAL_NAT64_SERVER=${DIND_SUBNET}200
     DNS64_PREFIX="${DNS64_PREFIX:-64:ff9b::}"
@@ -73,7 +73,7 @@ else
     dind_ip_base="$(echo "${DIND_SUBNET}" | sed 's/0$//')"
     KUBE_RSYNC_ADDR="${KUBE_RSYNC_ADDR:-127.0.0.1}"
     SERVICE_CIDR="${SERVICE_CIDR:-10.96.0.0/12}"
-    DIND_SUBNET_PREFIX="${DIND_SUBNET_PREFIX:-16}"
+    DIND_SUBNET_SIZE="${DIND_SUBNET_SIZE:-16}"
     dns_server="${REMOTE_DNS64_V4SERVER:-8.8.8.8}"
 fi
 DIND_IMAGE="${DIND_IMAGE:-}"
@@ -399,7 +399,7 @@ function dind::ensure-network {
       # Need second network
       v6settings="--subnet=172.18.0.0/16 --ipv6"
     fi
-    docker network create ${v6settings} --subnet="${DIND_SUBNET}/${DIND_SUBNET_PREFIX}" --gateway="${dind_ip_base}1" kubeadm-dind-net >/dev/null
+    docker network create ${v6settings} --subnet="${DIND_SUBNET}/${DIND_SUBNET_SIZE}" --gateway="${dind_ip_base}1" kubeadm-dind-net >/dev/null
   fi
 }
 
@@ -811,7 +811,7 @@ function dind::create-static-routes-for-bridge {
               docker exec -it ${host} ip route add ${subnet} via ${v4GWs[$j]} dev dind0
           fi
           if [[ $IP_MODE = "dualstack" || $IP_MODE = "ipv6" ]]; then
-              subnet="${POD_NET_V6_CIDR_PREFIX}:${j}::/${DIND_SUBNET_PREFIX}"
+              subnet="${POD_NET_V6_CIDR_PREFIX}:${j}::/64"
               docker exec -it ${host} ip -6 route add ${subnet} via ${v6GWs[$j]} dev dind0
           fi
       done
