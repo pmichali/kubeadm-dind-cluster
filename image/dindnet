@@ -200,7 +200,7 @@ else
   old_ns="$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf)"
   if [[ ${old_ns} ]]; then
     # sed -i doesn't work here because of docker's handling of /etc/resolv.conf
-    sed "s/^nameserver.*/nameserver ${IP}/" /etc/resolv.conf >/etc/resolv.conf.updated
+    sed "s/^nameserver.*/nameserver ${IPV4}/" /etc/resolv.conf >/etc/resolv.conf.updated
     cp /etc/resolv.conf /etc/resolv.conf.orig
     cat /etc/resolv.conf.updated >/etc/resolv.conf
     while true; do
