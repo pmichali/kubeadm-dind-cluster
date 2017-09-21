@@ -47,12 +47,7 @@ if [[ ! ${EMBEDDED_CONFIG:-} ]]; then
 fi
 
 IP_MODE="${IP_MODE:-legacy}"  # legacy, ipv4, ipv6, dualstack
-if ! dind::at-least-kubeadm-1-8 && $IP_MODE != legacy; then
-    echo "Must be using KubeAdm 1.8+ to specify IP mode"
-    exit 1
-fi
-
-# NOTE: Prefix is fixed to /16 and /64 in dindnet, for IPv4 and IPv6, respectively
+# NOTE: Prefix length is fixed to /16 and /64 in dindnet, for IPv4 and IPv6, respectively
 POD_NET_V4_CIDR_PREFIX="${POD_NET_V4_CIDR_PREFIX:-10.244}"
 POD_NET_V6_CIDR_PREFIX="${POD_NET_V6_CIDR_PREFIX:-fd00:20}"
 
