@@ -17,6 +17,7 @@ set -o errexit
 set -o nounset
 set -o pipefail
 set -o errtrace
+set -x
 
 if [ $(uname) = Darwin ]; then
   readlinkf(){ perl -MCwd -e 'print Cwd::abs_path shift' "$1";}
