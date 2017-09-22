@@ -162,15 +162,21 @@ V6_SUBNET_EOF
   }
 }
 SUFFIX_EOF
+  cat $CONF_FILE
 }
 
-
-if [[ "${CNI_BRIDGE_NETWORK_OFFSET:-}" ]]; then
-  if dind::do-v6 ; then
-    sysctl -w net.ipv6.conf.all.disable_ipv6=0
-    sysctl -w net.ipv6.conf.all.forwarding=1
+function dind::setup-dns {
+  if [[ $IP_MODE = "ipv6" ]]; then
+    sed -e "s/^${IPV4}/${IPV6}/g" /etc/hosts > /etc/hosts.updated
+    cp /etc/hosts /etc/hosts.orig
+    cat /etc/hosts.updated >/etc/hosts
   fi
-  dind::setup-bridge
+  sed "s/^nameserver.*127\.0\.0\.11/nameserver ${LOCAL_DNS64_SERVER}/" /etc/resolv.conf >/etc/resolv.conf.updated
+  cp /etc/resolv.conf /etc/resolv.conf.orig
+  cat /etc/resolv.conf.updated >/etc/resolv.conf
+}
+
+function dind::install-cni-plugin {
   if [[ $IP_MODE != "legacy" ]]; then
     # TODO: Remove, once DinD is able to use v0.6.0 CNI release
     protocol=""
@@ -180,35 +186,21 @@ if [[ "${CNI_BRIDGE_NETWORK_OFFSET:-}" ]]; then
     curl -sSL $protocol --retry 5 https://github.com/containernetworking/plugins/releases/download/v0.6.0-rc1/cni-plugins-amd64-v0.6.0-rc1.tgz | \
 	tar -C /opt/cni/bin -xz
   fi
+}
+
+
+if [[ "${CNI_BRIDGE_NETWORK_OFFSET:-}" ]]; then
+  if dind::do-v6 ; then
+    sysctl -w net.ipv6.conf.all.disable_ipv6=0
+    sysctl -w net.ipv6.conf.all.forwarding=1
+  fi
+  dind::setup-bridge
+  dind::setup-dns
+  dind::install-cni-plugin
   if [[ $IP_MODE = "legacy" ]]; then
     dind::setup-config-file
   else
     dind::setup-new-config-file
   fi
-fi
-
-if [[ $IP_MODE = "ipv6" ]]; then
-  sed -e "s/^${IPV4}/${IPV6}/g" /etc/hosts > /etc/hosts.updated
-  cp /etc/hosts /etc/hosts.orig
-  cat /etc/hosts.updated >/etc/hosts
-  # Removed embedded docker DNS, as we'll only be using IPv6, which is already in resolv.conf
-  sed "s/^nameserver.*127\.0\.0\.11/# Removed 127.0.0.1/" /etc/resolv.conf >/etc/resolv.conf.updated
-  cp /etc/resolv.conf /etc/resolv.conf.orig
-  cat /etc/resolv.conf.updated >/etc/resolv.conf
-else
-  # make docker's kube-dns friendly
-  old_ns="$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf)"
-  if [[ ${old_ns} ]]; then
-    # sed -i doesn't work here because of docker's handling of /etc/resolv.conf
-    sed "s/^nameserver.*/nameserver ${IPV4}/" /etc/resolv.conf >/etc/resolv.conf.updated
-    cp /etc/resolv.conf /etc/resolv.conf.orig
-    cat /etc/resolv.conf.updated >/etc/resolv.conf
-    while true; do
-      socat udp4-recvfrom:53,reuseaddr,fork,bind=${IP} UDP:${old_ns}:53 || true
-      echo "WARNING: restarting socat" >&2
-    done
-  else
-    echo "WARNING: couldn't get nameserver" >&2
-    exit 1
-  fi
+  echo "Setup completed"
 fi

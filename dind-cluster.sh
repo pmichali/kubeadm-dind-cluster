@@ -55,6 +55,7 @@ POD_NET_V6_CIDR_PREFIX="${POD_NET_V6_CIDR_PREFIX:-fd00:20}"
 CNI_PLUGIN="${CNI_PLUGIN:-bridge}"
 ETCD_HOST="${ETCD_HOST:-127.0.0.1}"
 POD_NETWORK_CIDR="${POD_NETWORK_CIDR:-10.244.0.0/16}"
+REMOTE_DNS64_V4SERVER="${REMOTE_DNS64_V4SERVER:-8.8.8.8}"
 if [[ ${IP_MODE} = "ipv6" ]]; then
     DIND_SUBNET="${DIND_SUBNET:-fd00:10::}"
     dind_ip_base=${DIND_SUBNET}
@@ -62,20 +63,18 @@ if [[ ${IP_MODE} = "ipv6" ]]; then
     KUBE_RSYNC_ADDR="${KUBE_RSYNC_ADDR:-::1}"
     SERVICE_CIDR="${SERVICE_CIDR:-fd00:30::/110}"
     DIND_SUBNET_SIZE="${DIND_SUBNET_SIZE:-64}"
-    REMOTE_DNS64_V4SERVER="${REMOTE_DNS64_V4SERVER:-8.8.8.8}"
-    LOCAL_NAT64_SERVER=${DIND_SUBNET}200
     DNS64_PREFIX="${DNS64_PREFIX:-fd00:10:64:ff9b::}"
     DNS64_PREFIX_SIZE="${DNS64_PREFIX_SIZE:-96}"
     DNS64_PREFIX_CIDR="${DNS64_PREFIX}/${DNS64_PREFIX_SIZE}"
-    dns_server=${dind_ip_base}100
 else
     DIND_SUBNET="${DIND_SUBNET:-10.192.0.0}"
     dind_ip_base="$(echo "${DIND_SUBNET}" | sed 's/0$//')"
     KUBE_RSYNC_ADDR="${KUBE_RSYNC_ADDR:-127.0.0.1}"
     SERVICE_CIDR="${SERVICE_CIDR:-10.96.0.0/12}"
     DIND_SUBNET_SIZE="${DIND_SUBNET_SIZE:-16}"
-    dns_server="${REMOTE_DNS64_V4SERVER:-8.8.8.8}"
 fi
+dns_server=${dind_ip_base}100
+LOCAL_NAT64_SERVER=${dind_ip_base}200
 DIND_IMAGE="${DIND_IMAGE:-}"
 BUILD_KUBEADM="${BUILD_KUBEADM:-}"
 BUILD_HYPERKUBE="${BUILD_HYPERKUBE:-}"
@@ -422,39 +421,57 @@ function dind::ensure-volume {
 }
 
 function dind::ensure-dns {
-    if [[ $IP_MODE = "ipv6" ]]; then
-        if ! docker inspect bind9 >&/dev/null; then
-            dind::start-dns64
-        fi
+    if docker inspect bind9 >&/dev/null; then
+        return 0
     fi
-}
-
-function dind::start-dns64 {
     local bind9_path=/tmp/bind9
     rm -rf $bind9_path
     mkdir -p $bind9_path/conf $bind9_path/cache
+
+    local remote_dns=$REMOTE_DNS64_V4SERVER
+    if [[ $IP_MODE = "ipv6" ]]; then
+	remote_dns=${DNS64_PREFIX}${REMOTE_DNS64_V4SERVER}
+    fi
+
     cat >${bind9_path}/conf/named.conf <<BIND9_EOF
 options {
     directory "/var/bind";
     allow-query { any; };
     forwarders {
-        ${DNS64_PREFIX}${REMOTE_DNS64_V4SERVER};
+        $remote_dns;
     };
     auth-nxdomain no;    # conform to RFC1035
+BIND9_EOF
+
+    if [[ $IP_MODE = "ipv6" ]]; then
+	cat >>${bind9_path}/conf/named.conf <<BIND9_V6
     listen-on-v6 { any; };
     dns64 ${DNS64_PREFIX_CIDR} {
         exclude { any; };
     };
+BIND9_V6
+    fi
+    cat >>${bind9_path}/conf/named.conf <<BIND9_TRAILER
 };
-BIND9_EOF
+BIND9_TRAILER
+
+    local ip_mode=""
+    local v6_flags=""
+    if [[ $IP_MODE = "ipv6" ]]; then
+	ip_mode="--ip6"
+        v6_flags="--sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.all.forwarding=1"
+    else
+        ip_mode="--ip"
+    fi
     docker run -d --name bind9 --hostname bind9 --net kubeadm-dind-net --label mirantis.kubeadm_dind_cluster \
-           --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.all.forwarding=1 \
-           --privileged=true --ip6 $dns_server --dns $dns_server \
+           --privileged=true $ip_mode $dns_server $v6_flags --dns $dns_server \
            -v ${bind9_path}/conf/named.conf:/etc/bind/named.conf \
 	   resystit/bind9:latest >/dev/null
-    ipv4_addr=$(docker exec bind9 ip addr list eth0 | grep "inet" | awk '$1 == "inet" {print $2}')
-    docker exec bind9 ip addr del $ipv4_addr dev eth0
-    docker exec bind9 ip -6 route add $DNS64_PREFIX_CIDR via $LOCAL_NAT64_SERVER
+    if [[ $IP_MODE = "ipv6" ]]; then
+	ipv4_addr=$(docker exec bind9 ip addr list eth0 | grep "inet" | awk '$1 == "inet" {print $2}')
+	docker exec bind9 ip addr del $ipv4_addr dev eth0
+	docker exec bind9 ip -6 route add $DNS64_PREFIX_CIDR via $LOCAL_NAT64_SERVER
+    fi
 }
 
 function dind::ensure-nat {
@@ -500,8 +517,9 @@ function dind::run {
   args+=("systemd.setenv=POD_NET_V6_CIDR_PREFIX=${POD_NET_V6_CIDR_PREFIX}")
   if [[ ${IP_MODE} = "ipv6" ]]; then
       args+=("systemd.setenv=DNS64_PREFIX_CIDR=${DNS64_PREFIX_CIDR}")
-      args+=("systemd.setenv=LOCAL_NAT64_SERVER=${LOCAL_NAT64_SERVER}")
   fi
+  args+=("systemd.setenv=LOCAL_NAT64_SERVER=${LOCAL_NAT64_SERVER}")
+  args+=("systemd.setenv=LOCAL_DNS64_SERVER=${dns_server}")
   if [[ ! "${container_name}" ]]; then
     echo >&2 "Must specify container name"
     exit 1
@@ -539,7 +557,6 @@ function dind::run {
   docker run \
          -d --privileged \
          --net kubeadm-dind-net \
-         --dns ${dns_server} \
          --name "${container_name}" \
          --hostname "${container_name}" \
          -l mirantis.kubeadm_dind_cluster \
@@ -1187,6 +1204,11 @@ case "${1:-}" in
   routes)
     dind::create-static-routes-for-bridge
     ;;
+  pcm)
+      dind::ensure-network
+      dind::ensure-nat
+      dind::ensure-dns
+      ;;
   *)
     echo "usage:" >&2
     echo "  $0 up" >&2
