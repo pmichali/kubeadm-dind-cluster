@@ -162,7 +162,7 @@ V6_SUBNET_EOF
   }
 }
 SUFFIX_EOF
-  cat $CONF_FILE
+    echo "CNI config file created"
 }
 
 function dind::setup-dns {
