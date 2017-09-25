@@ -192,9 +192,10 @@ if [[ $IP_MODE = "ipv6" ]]; then
   cp /etc/hosts /etc/hosts.orig
   cat /etc/hosts.updated >/etc/hosts
   # Removed embedded docker DNS, as we'll only be using IPv6, which is already in resolv.conf
-  sed "s/^nameserver.*127\.0\.0\.11/# Removed 127.0.0.1/" /etc/resolv.conf >/etc/resolv.conf.updated
+  sed "s/^nameserver.*127\.0\.0\.11/# Removed 127.0.0.11/" /etc/resolv.conf >/etc/resolv.conf.updated
   cp /etc/resolv.conf /etc/resolv.conf.orig
   cat /etc/resolv.conf.updated >/etc/resolv.conf
+  echo "Setup completed"
 else
   # make docker's kube-dns friendly
   old_ns="$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf)"
@@ -204,7 +205,7 @@ else
     cp /etc/resolv.conf /etc/resolv.conf.orig
     cat /etc/resolv.conf.updated >/etc/resolv.conf
     while true; do
-      socat udp4-recvfrom:53,reuseaddr,fork,bind=${IP} UDP:${old_ns}:53 || true
+      socat udp4-recvfrom:53,reuseaddr,fork,bind=${IPV4} UDP:${old_ns}:53 || true
       echo "WARNING: restarting socat" >&2
     done
   else
