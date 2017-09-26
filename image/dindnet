@@ -170,8 +170,10 @@ function dind::setup-dns {
     sed -e "s/^${IPV4}/${IPV6}/g" /etc/hosts > /etc/hosts.updated
     cp /etc/hosts /etc/hosts.orig
     cat /etc/hosts.updated >/etc/hosts
+    sed "s/^nameserver.*127\.0\.0\.11/# Removed 127.0.0.11/" /etc/resolv.conf >/etc/resolv.conf.updated
+  else
+    sed "s/^nameserver.*/nameserver ${LOCAL_DNS64_SERVER}/" /etc/resolv.conf >/etc/resolv.conf.updated
   fi
-  sed "s/^nameserver.*127\.0\.0\.11/nameserver ${LOCAL_DNS64_SERVER}/" /etc/resolv.conf >/etc/resolv.conf.updated
   cp /etc/resolv.conf /etc/resolv.conf.orig
   cat /etc/resolv.conf.updated >/etc/resolv.conf
 }
