@@ -46,5 +46,11 @@ docker-machine ssh ${KUBE_DIND_VM} \
                -L ${KUBE_RSYNC_PORT}:localhost:${KUBE_RSYNC_PORT} \
                -L ${APISERVER_PORT}:localhost:${APISERVER_PORT} \
                -N&
+if [ ! -z "${DIND_IMAGE:-}" ]; then
+    place=`pwd`
+    cd "${DIND_ROOT}"
+    build/build-local.sh
+    cd "$place"
+fi
 time "${DIND_ROOT}"/dind-cluster.sh up
 set +x
