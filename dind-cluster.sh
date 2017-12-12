@@ -99,6 +99,7 @@ BUILD_KUBEADM="${BUILD_KUBEADM:-}"
 BUILD_HYPERKUBE="${BUILD_HYPERKUBE:-}"
 APISERVER_PORT=${APISERVER_PORT:-8080}
 NUM_NODES=${NUM_NODES:-2}
+EXTRA_PORTS="${EXTRA_PORTS:-}"
 LOCAL_KUBECTL_VERSION=${LOCAL_KUBECTL_VERSION:-}
 KUBECTL_DIR="${KUBECTL_DIR:-${HOME}/.kubeadm-dind-cluster}"
 DASHBOARD_URL="${DASHBOARD_URL:-https://rawgit.com/kubernetes/dashboard/bfab10151f012d1acc5dfb1979f3172e2400aa3c/src/deploy/kubernetes-dashboard.yaml}"
@@ -539,7 +540,10 @@ function dind::run {
   docker rm -vf "${container_name}" >&/dev/null || true
 
   if [[ "$portforward" ]]; then
-    opts+=(-p "$portforward")
+    IFS=';' read -ra array <<< "$portforward"
+    for element in "${array[@]}"; do
+      opts+=(-p "$element")
+    done
   fi
 
   if [[ ${CNI_PLUGIN} = bridge && ${netshift} ]]; then
@@ -718,6 +722,7 @@ networking:
 tokenTTL: 0s
 nodeName: kube-master
 apiServerExtraArgs:
+  runtime-config: "admissionregistration.k8s.io/v1alpha1"
   insecure-bind-address: "${bind_address}"
   insecure-port: "8080"
 EOF
@@ -750,7 +755,7 @@ function dind::create-node-container {
       opts+=(-e HYPERKUBE_SOURCE=build://)
     fi
   fi
-  dind::run ${reuse_volume} kube-node-${next_node_index} ${node_ip} $((next_node_index + 1)) "" ${opts[@]+"${opts[@]}"}
+  dind::run ${reuse_volume} kube-node-${next_node_index} ${node_ip} $((next_node_index + 1)) ${EXTRA_PORTS} ${opts[@]+"${opts[@]}"}
 }
 
 function dind::join {
