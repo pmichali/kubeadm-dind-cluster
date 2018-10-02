@@ -200,7 +200,7 @@ test_ipv6_only: &test_ipv6_only
         name: Run ipv6 only tests
         no_output_timeout: 25m
         command: |
-          "${PWD}/test/test-ipv6-only.sh"
+          "${PWD}/test/test-net-connectivity.sh"
 
 test_multiple_clusters: &test_multiple_clusters
   steps:
